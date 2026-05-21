@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Passkey Demo</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 480px; margin: 60px auto; padding: 0 1rem; }
+    h1   { font-size: 1.6rem; margin-bottom: 1.5rem; }
+    .card { border: 1px solid #ddd; border-radius: 8px; padding: 1.2rem; margin-bottom: 1rem; }
+    label { display: block; margin-bottom: 4px; font-weight: 600; }
+    input { width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid #ccc;
+            border-radius: 4px; font-size: 1rem; margin-bottom: 12px; }
+    button { padding: 8px 18px; border: none; border-radius: 4px; font-size: 1rem;
+             cursor: pointer; background: #0070f3; color: #fff; }
+    button:disabled { background: #aaa; }
+    #status { margin-top: 1rem; padding: 10px; border-radius: 4px; white-space: pre-wrap;
+              font-size: 0.875rem; background: #f5f5f5; display: none; }
+    #status.ok  { background: #d4edda; color: #155724; }
+    #status.err { background: #f8d7da; color: #721c24; }
+  </style>
+</head>
+<body>
+<h1>Passkey Demo</h1>
+
+<div class="card">
+  <h2>Register</h2>
+  <label for="reg-user">ユーザー名</label>
+  <input id="reg-user" type="text" placeholder="alice" autocomplete="username webauthn"/>
+  <button id="reg-btn">Passkey を登録</button>
+</div>
+
+<div class="card">
+  <h2>Authenticate</h2>
+  <label for="auth-user">ユーザー名</label>
+  <input id="auth-user" type="text" placeholder="alice" autocomplete="username webauthn"/>
+  <button id="auth-btn">Passkey でログイン</button>
+</div>
+
+<div id="status"></div>
+
+<script>
+function base64urlToBuffer(b64) {
+  const base64 = b64.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = base64.padEnd(base64.length + (4 - base64.length % 4) % 4, '=');
+  const binary = atob(padded);
+  const buf = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) buf[i] = binary.charCodeAt(i);
+  return buf.buffer;
+}
+
+function bufferToBase64url(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let bin = '';
+  for (let i = 0; i < bytes.byteLength; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
+function showStatus(msg, isError) {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = isError ? 'err' : 'ok';
+  el.style.display = 'block';
+}
+
+async function postJson(url, body) {
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const text = await resp.text();
+  let json;
+  try { json = JSON.parse(text); } catch (_) { json = { error: text }; }
+  if (!resp.ok) throw new Error(json.error || JSON.stringify(json));
+  return json;
+}
+
+document.getElementById('reg-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('reg-btn');
+  const userName = document.getElementById('reg-user').value.trim();
+  if (!userName) { showStatus('ユーザー名を入力してください。', true); return; }
+  btn.disabled = true;
+  try {
+    const opts = await postJson('/webauthn/register', { name: userName, displayName: userName });
+    opts.challenge = base64urlToBuffer(opts.challenge);
+    opts.user.id   = base64urlToBuffer(opts.user.id);
+    if (opts.excludeCredentials) {
+      opts.excludeCredentials = opts.excludeCredentials.map(c => ({ ...c, id: base64urlToBuffer(c.id) }));
+    }
+    const cred = await navigator.credentials.create({ publicKey: opts });
+    const result = await postJson('/webauthn/callback', {
+      id: cred.id, rawId: bufferToBase64url(cred.rawId), type: cred.type,
+      response: {
+        attestationObject: bufferToBase64url(cred.response.attestationObject),
+        clientDataJSON:    bufferToBase64url(cred.response.clientDataJSON)
+      }
+    });
+    showStatus('登録成功!\n' + JSON.stringify(result, null, 2), false);
+  } catch (err) {
+    showStatus('登録失敗: ' + err.message, true);
+    console.error(err);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById('auth-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('auth-btn');
+  const userName = document.getElementById('auth-user').value.trim();
+  if (!userName) { showStatus('ユーザー名を入力してください。', true); return; }
+  btn.disabled = true;
+  try {
+    const opts = await postJson('/webauthn/login', { name: userName });
+    opts.challenge = base64urlToBuffer(opts.challenge);
+    if (opts.allowCredentials) {
+      opts.allowCredentials = opts.allowCredentials.map(c => ({ ...c, id: base64urlToBuffer(c.id) }));
+    }
+    const assertion = await navigator.credentials.get({ publicKey: opts });
+    const result = await postJson('/webauthn/callback', {
+      id: assertion.id, rawId: bufferToBase64url(assertion.rawId), type: assertion.type,
+      response: {
+        authenticatorData: bufferToBase64url(assertion.response.authenticatorData),
+        clientDataJSON:    bufferToBase64url(assertion.response.clientDataJSON),
+        signature:         bufferToBase64url(assertion.response.signature),
+        userHandle:        assertion.response.userHandle
+                           ? bufferToBase64url(assertion.response.userHandle) : null
+      }
+    });
+    showStatus('認証成功!\n' + JSON.stringify(result, null, 2), false);
+  } catch (err) {
+    showStatus('認証失敗: ' + err.message, true);
+    console.error(err);
+  } finally {
+    btn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
