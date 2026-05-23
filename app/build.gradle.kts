@@ -24,7 +24,7 @@ java {
 }
 
 application {
-    mainClass = "org.example.App"
+    mainClass = "org.example.MainVerticle"
 }
 
 tasks.named<Test>("test") {

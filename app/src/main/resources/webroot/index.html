@@ -8,9 +8,7 @@
     body { font-family: system-ui, sans-serif; max-width: 480px; margin: 60px auto; padding: 0 1rem; }
     h1   { font-size: 1.6rem; margin-bottom: 1.5rem; }
     .card { border: 1px solid #ddd; border-radius: 8px; padding: 1.2rem; margin-bottom: 1rem; }
-    label { display: block; margin-bottom: 4px; font-weight: 600; }
-    input { width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid #ccc;
-            border-radius: 4px; font-size: 1rem; margin-bottom: 12px; }
+    .hint { font-size: 0.8rem; color: #666; margin-bottom: 1rem; }
     button { padding: 8px 18px; border: none; border-radius: 4px; font-size: 1rem;
              cursor: pointer; background: #0070f3; color: #fff; }
     button:disabled { background: #aaa; }
@@ -25,15 +23,15 @@
 
 <div class="card">
   <h2>Register</h2>
-  <label for="reg-user">ユーザー名</label>
-  <input id="reg-user" type="text" placeholder="alice" autocomplete="username webauthn"/>
+  <p class="hint">事前に DevTools Console で Cookie を設定してください:<br>
+    <code>document.cookie = "sessionId=11111111-1111-1111-1111-111111111111; path=/";</code>
+  </p>
   <button id="reg-btn">Passkey を登録</button>
 </div>
 
 <div class="card">
   <h2>Authenticate</h2>
-  <label for="auth-user">ユーザー名</label>
-  <input id="auth-user" type="text" placeholder="alice" autocomplete="username webauthn"/>
+  <p class="hint">登録済みの sessionId Cookie がセットされた状態でログインします。</p>
   <button id="auth-btn">Passkey でログイン</button>
 </div>
 
@@ -78,11 +76,9 @@ async function postJson(url, body) {
 
 document.getElementById('reg-btn').addEventListener('click', async () => {
   const btn = document.getElementById('reg-btn');
-  const userName = document.getElementById('reg-user').value.trim();
-  if (!userName) { showStatus('ユーザー名を入力してください。', true); return; }
   btn.disabled = true;
   try {
-    const opts = await postJson('/webauthn/register', { name: userName, displayName: userName });
+    const opts = await postJson('/webauthn/register', {});
     opts.challenge = base64urlToBuffer(opts.challenge);
     opts.user.id   = base64urlToBuffer(opts.user.id);
     if (opts.excludeCredentials) {
@@ -107,11 +103,9 @@ document.getElementById('reg-btn').addEventListener('click', async () => {
 
 document.getElementById('auth-btn').addEventListener('click', async () => {
   const btn = document.getElementById('auth-btn');
-  const userName = document.getElementById('auth-user').value.trim();
-  if (!userName) { showStatus('ユーザー名を入力してください。', true); return; }
   btn.disabled = true;
   try {
-    const opts = await postJson('/webauthn/login', { name: userName });
+    const opts = await postJson('/webauthn/login', {});
     opts.challenge = base64urlToBuffer(opts.challenge);
     if (opts.allowCredentials) {
       opts.allowCredentials = opts.allowCredentials.map(c => ({ ...c, id: base64urlToBuffer(c.id) }));

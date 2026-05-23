@@ -6,6 +6,6 @@ import static org.junit.jupiter.api.Assertions.*;
 class AppTest {
     @Test
     void appClassLoads() {
-        assertDoesNotThrow(() -> Class.forName("org.example.App"));
+        assertDoesNotThrow(() -> Class.forName("org.example.MainVerticle"));
     }
 }
