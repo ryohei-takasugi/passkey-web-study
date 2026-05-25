@@ -13,16 +13,14 @@ public class UserInfoHandler implements Handler<RoutingContext> {
     /** {@inheritDoc} */
     @Override
     public void handle(RoutingContext ctx) {
-        if (ctx.user() == null) {
-            ctx.response()
-               .setStatusCode(401)
-               .end(new JsonObject().put("error", "Unauthorized").encode());
+        JsonObject sessionJson = ctx.get(SessionWebAPIHandler.CTX_SESSION_KEY);
+        if (sessionJson == null) {
+            ctx.response().setStatusCode(401).end();
             return;
         }
+        String userId = sessionJson.getString("userId");
         ctx.response()
-           .putHeader("content-type", "application/json")
-           .end(new JsonObject()
-               .put("userId", ctx.user().principal().getString("sub"))
-               .encode());
+                .putHeader("content-type", "application/json")
+                .end(new JsonObject().put("userId", userId).encode());
     }
 }

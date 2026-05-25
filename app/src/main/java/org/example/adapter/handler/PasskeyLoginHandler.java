@@ -2,81 +2,84 @@ package org.example.adapter.handler;
 
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
-import io.vertx.core.http.Cookie;
 import io.vertx.core.json.JsonObject;
-import io.vertx.ext.auth.webauthn4j.WebAuthn4J;
 import io.vertx.ext.web.RoutingContext;
 import org.example.domain.model.SessionInfo;
 import org.example.domain.model.UserId;
-import org.example.domain.repository.SessionRepository;
+import org.example.infrastructure.session.SessionWebAPIClient;
+import org.example.infrastructure.webauthn.WebAuthnService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
  * POST /webauthn/login を処理するハンドラー。
- * sessionId Cookie からユーザーIDを解決し、WebAuthn アサーションオプションを返す。
+ * SessionWebAPIHandler が ctx にセットしたセッション情報からユーザーIDを解決し、
+ * WebAuthn アサーションオプションを返す。
  */
 public class PasskeyLoginHandler implements Handler<RoutingContext> {
 
-    private static final Logger log = LoggerFactory.getLogger(PasskeyLoginHandler.class);
+    private static final Logger logger = LoggerFactory.getLogger(PasskeyLoginHandler.class);
 
-    private final WebAuthn4J webAuthn;
-    private final SessionRepository sessionRepository;
+    private final WebAuthnService webAuthnService;
+    private final SessionWebAPIClient sessionWebAPIClient;
 
     /**
-     * @param webAuthn          WebAuthn4J インスタンス
-     * @param sessionRepository セッションリポジトリ
+     * @param webAuthnService     WebAuthn サービス
+     * @param sessionWebAPIClient セッション WebAPI クライアント
      */
-    public PasskeyLoginHandler(WebAuthn4J webAuthn, SessionRepository sessionRepository) {
-        this.webAuthn          = webAuthn;
-        this.sessionRepository = sessionRepository;
+    public PasskeyLoginHandler(WebAuthnService webAuthnService,
+            SessionWebAPIClient sessionWebAPIClient) {
+        this.webAuthnService     = webAuthnService;
+        this.sessionWebAPIClient = sessionWebAPIClient;
     }
 
     /** {@inheritDoc} */
     @Override
     public void handle(RoutingContext ctx) {
-        Cookie cookie = ctx.request().getCookie("sessionId");
-        if (cookie == null) {
-            respondError(ctx, 400, "sessionId cookie is required");
+        JsonObject sessionJson = ctx.get(SessionWebAPIHandler.CTX_SESSION_KEY);
+        if (sessionJson == null) {
+            respondError(ctx, 400, "session not found");
+            return;
+        }
+        String sessionId = ctx.get(SessionWebAPIHandler.CTX_SESSION_ID_KEY);
+
+        UserId userId;
+        try {
+            SessionInfo sessionInfo = SessionInfo.fromJson(sessionJson);
+            sessionInfo.requireAuthenticated();
+            userId = UserId.of(sessionInfo.userId());
+        } catch (IllegalStateException e) {
+            respondError(ctx, 400, e.getMessage());
             return;
         }
 
-        sessionRepository.findSession(cookie.getValue())
-            .compose(this::verifyAndResolveUserId)
-            .compose(userId -> buildAssertionOptions(userId)
-                .onSuccess(opts -> ctx.session().put(PasskeyRegisterHandler.SESSION_USER_ID_KEY, userId.value())))
-            .onSuccess(options -> saveAndRespond(ctx, options))
-            .onFailure(err    -> respondError(ctx, 400, err.getMessage()));
+        Future<JsonObject> authOptsFuture = webAuthnService.createAuthenticationOptions(userId.value());
+        authOptsFuture.compose(options -> {
+            String challenge = options.getString("challenge");
+            JsonObject updates = new JsonObject()
+                    .put(PasskeyRegisterHandler.SESSION_CHALLENGE_KEY, challenge)
+                    .put(PasskeyRegisterHandler.SESSION_USER_ID_KEY, userId.value())
+                    .put(WebAuthnService.SESSION_FLOW_KEY, WebAuthnService.FLOW_LOGIN);
+            Future<Void> putFuture = sessionWebAPIClient.put(sessionId, updates);
+            return putFuture.map(v -> {
+                return options;
+            });
+        }).onSuccess(options -> {
+            logger.debug("login options issued");
+            ctx.response()
+                    .putHeader("content-type", "application/json")
+                    .end(options.encode());
+        }).onFailure(err -> {
+            respondError(ctx, 400, err.getMessage());
+        });
     }
 
     // ── プライベートヘルパー ────────────────────────────────────────
 
-    private Future<UserId> verifyAndResolveUserId(SessionInfo session) {
-        try {
-            session.requireAuthenticated();
-            return Future.succeededFuture(UserId.of(session.userId()));
-        } catch (IllegalStateException e) {
-            return Future.failedFuture(e);
-        }
-    }
-
-    private Future<JsonObject> buildAssertionOptions(UserId userId) {
-        return webAuthn.getCredentialsOptions(userId.value());
-    }
-
-    private void saveAndRespond(RoutingContext ctx, JsonObject options) {
-        ctx.session().put(PasskeyRegisterHandler.SESSION_CHALLENGE_KEY,
-                          options.getString("challenge"));
-        log.debug("login options issued");
-        ctx.response()
-           .putHeader("content-type", "application/json")
-           .end(options.encode());
-    }
-
     private void respondError(RoutingContext ctx, int status, String message) {
-        log.warn("login error: {}", message);
+        logger.warn("login error: {}", message);
         ctx.response()
-           .setStatusCode(status)
-           .end(new JsonObject().put("error", message).encode());
+                .setStatusCode(status)
+                .end(new JsonObject().put("error", message).encode());
     }
 }

@@ -12,7 +12,7 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 
     implementation(libs.vertx.web)
-    implementation(libs.vertx.auth.webauthn4j)
+    implementation(libs.webauthn4j.core)
     implementation(libs.slf4j.api)
     runtimeOnly(libs.logback.classic)
 }

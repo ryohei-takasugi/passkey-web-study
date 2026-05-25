@@ -2,9 +2,10 @@ package org.example.infrastructure.persistence;
 
 import io.vertx.core.Future;
 import io.vertx.core.Vertx;
+import io.vertx.core.buffer.Buffer;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
-import io.vertx.ext.auth.webauthn4j.Authenticator;
+import org.example.domain.model.CredentialRecord;
 import org.example.domain.repository.CredentialRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,11 +14,11 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * credentials.json に認証器データを永続化する CredentialRepository 実装。
+ * credentials.json にクレデンシャルを永続化する CredentialRepository 実装。
  */
 public class JsonFileCredentialRepository implements CredentialRepository {
 
-    private static final Logger log = LoggerFactory.getLogger(JsonFileCredentialRepository.class);
+    private static final Logger logger = LoggerFactory.getLogger(JsonFileCredentialRepository.class);
 
     private final Vertx vertx;
     private final String filePath;
@@ -33,51 +34,62 @@ public class JsonFileCredentialRepository implements CredentialRepository {
 
     /** {@inheritDoc} */
     @Override
-    public Future<List<Authenticator>> find(String userId, String credId) {
-        return readAll().map(all -> doFind(all, userId, credId));
+    public Future<List<CredentialRecord>> find(String userId, String credentialId) {
+        Future<JsonObject> allFuture = readAll();
+        return allFuture.map(all -> {
+            return doFind(all, userId, credentialId);
+        });
     }
 
     /** {@inheritDoc} */
     @Override
-    public Future<Void> store(Authenticator authenticator) {
-        String userId = authenticator.getUsername();
-        String credId = authenticator.getCredID();
-        log.info("store: userId={} credId={}", userId, credId);
-
-        return readAll()
-            .map(all -> replaceOrAdd(all, userId, credId, authenticator))
-            .compose(this::writeAll);
+    public Future<Void> store(CredentialRecord record) {
+        logger.info("store: userId={} credentialId={}", record.userId(), record.credentialId());
+        Future<JsonObject> allFuture = readAll();
+        Future<JsonObject> updatedFuture = allFuture.map(all -> {
+            return replaceOrAdd(all, record);
+        });
+        return updatedFuture.compose(updated -> {
+            return writeAll(updated);
+        });
     }
 
     /** {@inheritDoc} */
     @Override
-    public Future<Void> updateCounter(Authenticator authenticator) {
-        String userId = authenticator.getUsername();
-        String credId = authenticator.getCredID();
-        log.debug("updateCounter: userId={} credId={} counter={}",
-                  userId, credId, authenticator.getCounter());
-
-        return readAll()
-            .map(all -> patchCounter(all, userId, credId, authenticator.getCounter()))
-            .compose(this::writeAll);
+    public Future<Void> updateCounter(String credentialId, long newCount) {
+        logger.debug("updateCounter: credentialId={} newCount={}", credentialId, newCount);
+        Future<JsonObject> allFuture = readAll();
+        Future<JsonObject> patchedFuture = allFuture.map(all -> {
+            return patchCounter(all, credentialId, newCount);
+        });
+        return patchedFuture.compose(patched -> {
+            return writeAll(patched);
+        });
     }
 
     // ── 内部ヘルパー ─────────────────────────────────────────────────
 
     private Future<JsonObject> readAll() {
-        return vertx.fileSystem().exists(filePath)
-            .compose(exists -> exists
-                ? vertx.fileSystem().readFile(filePath).map(JsonObject::new)
-                : Future.succeededFuture(new JsonObject()));
+        Future<Boolean> existsFuture = vertx.fileSystem().exists(filePath);
+        return existsFuture.compose(exists -> {
+            if (exists) {
+                Future<Buffer> readFuture = vertx.fileSystem().readFile(filePath);
+                return readFuture.map(buf -> {
+                    return new JsonObject(buf);
+                });
+            } else {
+                return Future.succeededFuture(new JsonObject());
+            }
+        });
     }
 
     private Future<Void> writeAll(JsonObject data) {
         return vertx.fileSystem().writeFile(filePath, data.toBuffer());
     }
 
-    private List<Authenticator> doFind(JsonObject all, String userId, String credId) {
-        if (credId != null) {
-            return findByCredId(all, credId);
+    private List<CredentialRecord> doFind(JsonObject all, String userId, String credentialId) {
+        if (credentialId != null) {
+            return findByCredentialId(all, credentialId);
         }
         if (userId != null) {
             return findByUserId(all, userId);
@@ -85,47 +97,49 @@ public class JsonFileCredentialRepository implements CredentialRepository {
         return List.of();
     }
 
-    private List<Authenticator> findByCredId(JsonObject all, String credId) {
-        List<Authenticator> result = new ArrayList<>();
+    private List<CredentialRecord> findByCredentialId(JsonObject all, String credentialId) {
+        List<CredentialRecord> result = new ArrayList<>();
         for (String uid : all.fieldNames()) {
             all.getJsonArray(uid).stream()
-               .map(o -> new Authenticator((JsonObject) o))
-               .filter(a -> credId.equals(a.getCredID()))
+               .map(o -> CredentialRecord.fromJson((JsonObject) o))
+               .filter(r -> credentialId.equals(r.credentialId()))
                .forEach(result::add);
         }
         return result;
     }
 
-    private List<Authenticator> findByUserId(JsonObject all, String userId) {
+    private List<CredentialRecord> findByUserId(JsonObject all, String userId) {
         JsonArray arr = all.getJsonArray(userId, new JsonArray());
-        List<Authenticator> result = new ArrayList<>();
+        List<CredentialRecord> result = new ArrayList<>();
         arr.stream()
-           .map(o -> new Authenticator((JsonObject) o))
+           .map(o -> CredentialRecord.fromJson((JsonObject) o))
            .forEach(result::add);
         return result;
     }
 
-    private JsonObject replaceOrAdd(JsonObject all, String userId, String credId,
-                                    Authenticator authenticator) {
-        JsonArray existing = all.getJsonArray(userId, new JsonArray());
-        JsonArray updated  = new JsonArray();
+    private JsonObject replaceOrAdd(JsonObject all, CredentialRecord record) {
+        String userId       = record.userId();
+        String credentialId = record.credentialId();
+        JsonArray existing  = all.getJsonArray(userId, new JsonArray());
+        JsonArray updated   = new JsonArray();
 
         existing.stream()
                 .map(o -> (JsonObject) o)
-                .filter(o -> !credId.equals(o.getString("credID")))
+                .filter(o -> !credentialId.equals(o.getString("credentialId")))
                 .forEach(updated::add);
 
-        updated.add(authenticator.toJson());
+        updated.add(record.toJson());
         return all.put(userId, updated);
     }
 
-    private JsonObject patchCounter(JsonObject all, String userId, String credId, long counter) {
-        JsonArray arr = all.getJsonArray(userId, new JsonArray());
-        arr.stream()
-           .map(o -> (JsonObject) o)
-           .filter(o -> credId.equals(o.getString("credID")))
-           .findFirst()
-           .ifPresent(o -> o.put("counter", counter));
+    private JsonObject patchCounter(JsonObject all, String credentialId, long newCount) {
+        for (String uid : all.fieldNames()) {
+            all.getJsonArray(uid).stream()
+               .map(o -> (JsonObject) o)
+               .filter(o -> credentialId.equals(o.getString("credentialId")))
+               .findFirst()
+               .ifPresent(o -> o.put("signCount", newCount));
+        }
         return all;
     }
 }
