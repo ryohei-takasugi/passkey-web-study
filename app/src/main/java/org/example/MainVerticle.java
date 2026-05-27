@@ -59,7 +59,7 @@ public class MainVerticle extends AbstractVerticle {
         WebAuthnService webAuthnService = createWebAuthnService(credentialsPath);
         Router router = buildRouter(webAuthnService, sessionWebAPIClient);
 
-        Future<HttpServer> serverFuture = vertx.createHttpServer().requestHandler(router).listen(8080);
+        Future<HttpServer> serverFuture = vertx.createHttpServer().requestHandler(router).listen(8081);
         serverFuture.onSuccess(server -> {
             logger.info("HTTP server started on port:{}", server.actualPort());
             startPromise.complete();
@@ -79,9 +79,9 @@ public class MainVerticle extends AbstractVerticle {
     private Router buildRouter(WebAuthnService webAuthnService,
             SessionWebAPIClient sessionWebAPIClient) {
         Router router = Router.router(vertx);
-
-        router.route().handler(new SessionWebAPIHandler(sessionWebAPIClient));
+        
         router.route().handler(BodyHandler.create());
+        router.route().handler(new SessionWebAPIHandler(sessionWebAPIClient));
 
         router.post("/webauthn/register").handler(new PasskeyRegisterHandler(webAuthnService, sessionWebAPIClient));
         router.post("/webauthn/login").handler(new PasskeyLoginHandler(webAuthnService, sessionWebAPIClient));
@@ -96,7 +96,7 @@ public class MainVerticle extends AbstractVerticle {
     private WebAuthnService createWebAuthnService(String credentialsPath) {
         CredentialRepository credRepo = new JsonFileCredentialRepository(vertx, credentialsPath);
         return new WebAuthnService(
-                vertx, credRepo, "localhost", "Passkey Demo", "http://localhost:8080");
+                vertx, credRepo, "localhost", "Passkey Demo", "http://localhost:8081");
     }
 
     /**
